@@ -144,7 +144,7 @@ public final class PlatformDependent {
         // * == 0  - Use cleaner, Netty will not enforce max memory, and instead will defer to JDK.
         // * >  0  - Don't use cleaner. This will limit Netty's total direct memory
         //           (note: that JDK's direct memory limit is independent of this).
-        long maxDirectMemory = SystemPropertyUtil.getLong("io.netty.maxDirectMemory", -1);
+        long maxDirectMemory = SystemPropertyUtil.getLong("io.netty.maxDirectMemory", 0);
 
         if (maxDirectMemory == 0 || !hasUnsafe() || !PlatformDependent0.hasDirectBufferNoCleanerConstructor()) {
             USE_DIRECT_BUFFER_NO_CLEANER = false;
