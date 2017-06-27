@@ -20,7 +20,7 @@
   <parent>
     <groupId>io.netty</groupId>
     <artifactId>netty-parent</artifactId>
-    <version>4.1.9.Final-SNAPSHOT</version>
+    <version>4.1.13.Final-SNAPSHOT</version>
   </parent>
 
   <artifactId>netty-handler</artifactId>
@@ -68,6 +68,12 @@
     <dependency>
       <groupId>org.eclipse.jetty.alpn</groupId>
       <artifactId>alpn-api</artifactId>
+      <optional>true</optional>
+    </dependency>
+    <dependency>
+      <groupId>${conscrypt.groupId}</groupId>
+      <artifactId>${conscrypt.artifactId}</artifactId>
+      <classifier>${conscrypt.classifier}</classifier>
       <optional>true</optional>
     </dependency>
     <dependency>

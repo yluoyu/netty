@@ -62,12 +62,12 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.anyShort;
-import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.anyShort;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -111,28 +111,28 @@ public class Http2ConnectionRoundtripTest {
     @After
     public void teardown() throws Exception {
         if (clientChannel != null) {
-            clientChannel.close().sync();
+            clientChannel.close().syncUninterruptibly();
             clientChannel = null;
         }
         if (serverChannel != null) {
-            serverChannel.close().sync();
+            serverChannel.close().syncUninterruptibly();
             serverChannel = null;
         }
         final Channel serverConnectedChannel = this.serverConnectedChannel;
         if (serverConnectedChannel != null) {
-            serverConnectedChannel.close().sync();
+            serverConnectedChannel.close().syncUninterruptibly();
             this.serverConnectedChannel = null;
         }
-        Future<?> serverGroup = sb.config().group().shutdownGracefully(0, 0, MILLISECONDS);
-        Future<?> serverChildGroup = sb.config().childGroup().shutdownGracefully(0, 0, MILLISECONDS);
-        Future<?> clientGroup = cb.config().group().shutdownGracefully(0, 0, MILLISECONDS);
-        serverGroup.sync();
-        serverChildGroup.sync();
-        clientGroup.sync();
+        Future<?> serverGroup = sb.config().group().shutdownGracefully(0, 5, SECONDS);
+        Future<?> serverChildGroup = sb.config().childGroup().shutdownGracefully(0, 5, SECONDS);
+        Future<?> clientGroup = cb.config().group().shutdownGracefully(0, 5, SECONDS);
+        serverGroup.syncUninterruptibly();
+        serverChildGroup.syncUninterruptibly();
+        clientGroup.syncUninterruptibly();
     }
 
     @Test
-    public void inflightFrameAfterStreamResetShouldNotMakeConnectionUnsuable() throws Exception {
+    public void inflightFrameAfterStreamResetShouldNotMakeConnectionUnusable() throws Exception {
         bootstrapEnv(1, 1, 2, 1);
         final CountDownLatch latch = new CountDownLatch(1);
         doAnswer(new Answer<Void>() {
@@ -337,6 +337,95 @@ public class Http2ConnectionRoundtripTest {
 
         verify(serverListener, never()).onDataRead(any(ChannelHandlerContext.class), anyInt(), any(ByteBuf.class),
                 anyInt(), anyBoolean());
+
+        // Verify that no errors have been received.
+        verify(serverListener, never()).onGoAwayRead(any(ChannelHandlerContext.class), anyInt(), anyLong(),
+                any(ByteBuf.class));
+        verify(serverListener, never()).onRstStreamRead(any(ChannelHandlerContext.class), anyInt(), anyLong());
+        verify(clientListener, never()).onGoAwayRead(any(ChannelHandlerContext.class), anyInt(), anyLong(),
+                any(ByteBuf.class));
+        verify(clientListener, never()).onRstStreamRead(any(ChannelHandlerContext.class), anyInt(), anyLong());
+    }
+
+    @Test
+    public void testSettingsAckIsSentBeforeUsingFlowControl() throws Exception {
+        bootstrapEnv(1, 1, 1, 1);
+
+        final CountDownLatch serverSettingsAckLatch1 = new CountDownLatch(1);
+        final CountDownLatch serverSettingsAckLatch2 = new CountDownLatch(2);
+        final CountDownLatch serverDataLatch = new CountDownLatch(1);
+        final CountDownLatch clientWriteDataLatch = new CountDownLatch(1);
+        final byte[] data = new byte[] {1, 2, 3, 4, 5};
+        final ByteArrayOutputStream out = new ByteArrayOutputStream(data.length);
+
+        doAnswer(new Answer<Void>() {
+            @Override
+            public Void answer(InvocationOnMock invocationOnMock) throws Throwable {
+                serverSettingsAckLatch1.countDown();
+                serverSettingsAckLatch2.countDown();
+                return null;
+            }
+        }).when(serverListener).onSettingsAckRead(any(ChannelHandlerContext.class));
+        doAnswer(new Answer<Integer>() {
+            @Override
+            public Integer answer(InvocationOnMock in) throws Throwable {
+                ByteBuf buf = (ByteBuf) in.getArguments()[2];
+                int padding = (Integer) in.getArguments()[3];
+                int processedBytes = buf.readableBytes() + padding;
+
+                buf.readBytes(out, buf.readableBytes());
+                serverDataLatch.countDown();
+                return processedBytes;
+            }
+        }).when(serverListener).onDataRead(any(ChannelHandlerContext.class), eq(3),
+                any(ByteBuf.class), eq(0), anyBoolean());
+
+        final Http2Headers headers = dummyHeaders();
+
+        // The server initially reduces the connection flow control window to 0.
+        runInChannel(serverConnectedChannel, new Http2Runnable() {
+            @Override
+            public void run() throws Http2Exception {
+                http2Server.encoder().writeSettings(serverCtx(),
+                        new Http2Settings().copyFrom(http2Server.decoder().localSettings())
+                                .initialWindowSize(0),
+                        serverNewPromise());
+                http2Server.flush(serverCtx());
+            }
+        });
+
+        assertTrue(serverSettingsAckLatch1.await(DEFAULT_AWAIT_TIMEOUT_SECONDS, SECONDS));
+
+        // The client should now attempt to send data, but the window size is 0 so it will be queued in the flow
+        // controller.
+        runInChannel(clientChannel, new Http2Runnable() {
+            @Override
+            public void run() throws Http2Exception {
+                http2Client.encoder().writeHeaders(ctx(), 3, headers, 0, (short) 16, false, 0, false,
+                        newPromise());
+                http2Client.encoder().writeData(ctx(), 3, Unpooled.wrappedBuffer(data), 0, true, newPromise());
+                http2Client.flush(ctx());
+                clientWriteDataLatch.countDown();
+            }
+        });
+
+        assertTrue(clientWriteDataLatch.await(DEFAULT_AWAIT_TIMEOUT_SECONDS, SECONDS));
+
+        // Now the server opens up the connection window to allow the client to send the pending data.
+        runInChannel(serverConnectedChannel, new Http2Runnable() {
+            @Override
+            public void run() throws Http2Exception {
+                http2Server.encoder().writeSettings(serverCtx(),
+                        new Http2Settings().copyFrom(http2Server.decoder().localSettings())
+                                .initialWindowSize(data.length),
+                        serverNewPromise());
+                http2Server.flush(serverCtx());
+            }
+        });
+
+        assertTrue(serverSettingsAckLatch2.await(DEFAULT_AWAIT_TIMEOUT_SECONDS, SECONDS));
+        assertTrue(serverDataLatch.await(DEFAULT_AWAIT_TIMEOUT_SECONDS, SECONDS));
+        assertArrayEquals(data, out.toByteArray());
 
         // Verify that no errors have been received.
         verify(serverListener, never()).onGoAwayRead(any(ChannelHandlerContext.class), anyInt(), anyLong(),
@@ -773,6 +862,7 @@ public class Http2ConnectionRoundtripTest {
                         .gracefulShutdownTimeoutMillis(0)
                         .build());
                 p.addLast(new ChannelInboundHandlerAdapter() {
+                    @Override
                     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
                         if (evt instanceof Http2ConnectionPrefaceWrittenEvent) {
                             prefaceWrittenLatch.countDown();

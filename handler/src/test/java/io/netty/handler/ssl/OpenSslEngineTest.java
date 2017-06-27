@@ -25,6 +25,8 @@ import io.netty.util.internal.PlatformDependent;
 import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import java.nio.ByteBuffer;
 import java.security.AlgorithmConstraints;
@@ -32,6 +34,7 @@ import java.security.AlgorithmParameters;
 import java.security.CryptoPrimitive;
 import java.security.Key;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import javax.net.ssl.SSLEngine;
@@ -39,7 +42,12 @@ import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLParameters;
 
+import static io.netty.handler.ssl.OpenSslTestUtils.checkShouldUseKeyManagerFactory;
+import static io.netty.handler.ssl.ReferenceCountedOpenSslEngine.MAX_ENCRYPTED_PACKET_LENGTH;
+import static io.netty.handler.ssl.ReferenceCountedOpenSslEngine.MAX_TLS_RECORD_OVERHEAD_LENGTH;
+import static io.netty.handler.ssl.ReferenceCountedOpenSslEngine.MAX_PLAINTEXT_LENGTH;
 import static io.netty.internal.tcnative.SSL.SSL_CVERIFY_IGNORED;
+import static java.lang.Integer.MAX_VALUE;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -47,9 +55,19 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
+@RunWith(Parameterized.class)
 public class OpenSslEngineTest extends SSLEngineTest {
     private static final String PREFERRED_APPLICATION_LEVEL_PROTOCOL = "my-protocol-http2";
     private static final String FALLBACK_APPLICATION_LEVEL_PROTOCOL = "my-protocol-http1_1";
+
+    @Parameterized.Parameters(name = "{index}: bufferType = {0}")
+    public static Collection<Object> data() {
+        List<Object> params = new ArrayList<Object>();
+        for (BufferType type: BufferType.values()) {
+            params.add(type);
+        }
+        return params;
+    }
 
     public OpenSslEngineTest(BufferType type) {
         super(type);
@@ -63,35 +81,35 @@ public class OpenSslEngineTest extends SSLEngineTest {
     @Override
     @Test
     public void testMutualAuthInvalidIntermediateCASucceedWithOptionalClientAuth() throws Exception {
-        assumeTrue(OpenSsl.supportsKeyManagerFactory());
+        checkShouldUseKeyManagerFactory();
         super.testMutualAuthInvalidIntermediateCASucceedWithOptionalClientAuth();
     }
 
     @Override
     @Test
     public void testMutualAuthInvalidIntermediateCAFailWithOptionalClientAuth() throws Exception {
-        assumeTrue(OpenSsl.supportsKeyManagerFactory());
+        checkShouldUseKeyManagerFactory();
         super.testMutualAuthInvalidIntermediateCAFailWithOptionalClientAuth();
     }
 
     @Override
     @Test
     public void testMutualAuthInvalidIntermediateCAFailWithRequiredClientAuth() throws Exception {
-        assumeTrue(OpenSsl.supportsKeyManagerFactory());
+        checkShouldUseKeyManagerFactory();
         super.testMutualAuthInvalidIntermediateCAFailWithRequiredClientAuth();
     }
 
     @Override
     @Test
     public void testMutualAuthValidClientCertChainTooLongFailOptionalClientAuth() throws Exception {
-        assumeTrue(OpenSsl.supportsKeyManagerFactory());
+        checkShouldUseKeyManagerFactory();
         super.testMutualAuthValidClientCertChainTooLongFailOptionalClientAuth();
     }
 
     @Override
     @Test
     public void testMutualAuthValidClientCertChainTooLongFailRequireClientAuth() throws Exception {
-        assumeTrue(OpenSsl.supportsKeyManagerFactory());
+        checkShouldUseKeyManagerFactory();
         super.testMutualAuthValidClientCertChainTooLongFailRequireClientAuth();
     }
 
@@ -200,12 +218,12 @@ public class OpenSslEngineTest extends SSLEngineTest {
             ByteBuffer src = allocateBuffer(srcLen);
 
             ByteBuffer dstTooSmall = allocateBuffer(
-                    src.capacity() + ReferenceCountedOpenSslEngine.MAX_ENCRYPTION_OVERHEAD_LENGTH - 1);
+                    src.capacity() + MAX_TLS_RECORD_OVERHEAD_LENGTH - 1);
             ByteBuffer dst = allocateBuffer(
-                    src.capacity() + ReferenceCountedOpenSslEngine.MAX_ENCRYPTION_OVERHEAD_LENGTH);
+                    src.capacity() + MAX_TLS_RECORD_OVERHEAD_LENGTH);
 
             // Check that we fail to wrap if the dst buffers capacity is not at least
-            // src.capacity() + ReferenceCountedOpenSslEngine.MAX_ENCRYPTION_OVERHEAD_LENGTH
+            // src.capacity() + ReferenceCountedOpenSslEngine.MAX_TLS_RECORD_OVERHEAD_LENGTH
             SSLEngineResult result = clientEngine.wrap(src, dstTooSmall);
             assertEquals(SSLEngineResult.Status.BUFFER_OVERFLOW, result.getStatus());
             assertEquals(0, result.bytesConsumed());
@@ -214,7 +232,7 @@ public class OpenSslEngineTest extends SSLEngineTest {
             assertEquals(dst.remaining(), dst.capacity());
 
             // Check that we can wrap with a dst buffer that has the capacity of
-            // src.capacity() + ReferenceCountedOpenSslEngine.MAX_ENCRYPTION_OVERHEAD_LENGTH
+            // src.capacity() + ReferenceCountedOpenSslEngine.MAX_TLS_RECORD_OVERHEAD_LENGTH
             result = clientEngine.wrap(src, dst);
             assertEquals(SSLEngineResult.Status.OK, result.getStatus());
             assertEquals(srcLen, result.bytesConsumed());
@@ -249,7 +267,7 @@ public class OpenSslEngineTest extends SSLEngineTest {
             ByteBuffer src2 = src.duplicate();
 
             ByteBuffer dst = allocateBuffer(src.capacity()
-                    + ReferenceCountedOpenSslEngine.MAX_ENCRYPTION_OVERHEAD_LENGTH);
+                    + MAX_TLS_RECORD_OVERHEAD_LENGTH);
 
             SSLEngineResult result = clientEngine.wrap(new ByteBuffer[] { src, src2 }, dst);
             assertEquals(SSLEngineResult.Status.BUFFER_OVERFLOW, result.getStatus());
@@ -284,7 +302,7 @@ public class OpenSslEngineTest extends SSLEngineTest {
             ByteBuffer src = allocateBuffer(1024);
             List<ByteBuffer> srcList = new ArrayList<ByteBuffer>();
             long srcsLen = 0;
-            long maxLen = ((long) Integer.MAX_VALUE) * 2;
+            long maxLen = ((long) MAX_VALUE) * 2;
 
             while (srcsLen < maxLen) {
                 ByteBuffer dup = src.duplicate();
@@ -294,7 +312,7 @@ public class OpenSslEngineTest extends SSLEngineTest {
 
             ByteBuffer[] srcs = srcList.toArray(new ByteBuffer[srcList.size()]);
 
-            ByteBuffer dst = allocateBuffer(ReferenceCountedOpenSslEngine.MAX_ENCRYPTED_PACKET_LENGTH - 1);
+            ByteBuffer dst = allocateBuffer(MAX_ENCRYPTED_PACKET_LENGTH - 1);
 
             SSLEngineResult result = clientEngine.wrap(srcs, dst);
             assertEquals(SSLEngineResult.Status.BUFFER_OVERFLOW, result.getStatus());
@@ -313,14 +331,20 @@ public class OpenSslEngineTest extends SSLEngineTest {
 
     @Test
     public void testCalculateOutNetBufSizeOverflow() {
-        assertEquals(ReferenceCountedOpenSslEngine.MAX_ENCRYPTED_PACKET_LENGTH,
-                ReferenceCountedOpenSslEngine.calculateOutNetBufSize(Integer.MAX_VALUE));
+        assertEquals(MAX_ENCRYPTED_PACKET_LENGTH,
+                ReferenceCountedOpenSslEngine.calculateOutNetBufSize(MAX_VALUE, 1));
     }
 
     @Test
     public void testCalculateOutNetBufSize0() {
-        assertEquals(ReferenceCountedOpenSslEngine.MAX_ENCRYPTION_OVERHEAD_LENGTH,
-                ReferenceCountedOpenSslEngine.calculateOutNetBufSize(0));
+        assertEquals(MAX_TLS_RECORD_OVERHEAD_LENGTH,
+                ReferenceCountedOpenSslEngine.calculateOutNetBufSize(0, 1));
+    }
+
+    @Test
+    public void testCalculateOutNetBufSizeMaxEncryptedPacketLength() {
+        assertEquals(MAX_ENCRYPTED_PACKET_LENGTH,
+                ReferenceCountedOpenSslEngine.calculateOutNetBufSize(MAX_ENCRYPTED_PACKET_LENGTH + 1, 2));
     }
 
     @Override
@@ -538,9 +562,9 @@ public class OpenSslEngineTest extends SSLEngineTest {
             do {
                 testWrapDstBigEnough(clientEngine, srcLen);
                 srcLen += 64;
-            } while (srcLen < ReferenceCountedOpenSslEngine.MAX_PLAINTEXT_LENGTH);
+            } while (srcLen < MAX_PLAINTEXT_LENGTH);
 
-            testWrapDstBigEnough(clientEngine, ReferenceCountedOpenSslEngine.MAX_PLAINTEXT_LENGTH);
+            testWrapDstBigEnough(clientEngine, MAX_PLAINTEXT_LENGTH);
         } finally {
             cleanupClientSslEngine(clientEngine);
             cleanupServerSslEngine(serverEngine);
@@ -549,7 +573,7 @@ public class OpenSslEngineTest extends SSLEngineTest {
 
     private void testWrapDstBigEnough(SSLEngine engine, int srcLen) throws SSLException {
         ByteBuffer src = allocateBuffer(srcLen);
-        ByteBuffer dst = allocateBuffer(srcLen + ReferenceCountedOpenSslEngine.MAX_ENCRYPTION_OVERHEAD_LENGTH);
+        ByteBuffer dst = allocateBuffer(srcLen + MAX_TLS_RECORD_OVERHEAD_LENGTH);
 
         SSLEngineResult result = engine.wrap(src, dst);
         assertEquals(SSLEngineResult.Status.OK, result.getStatus());
@@ -563,8 +587,8 @@ public class OpenSslEngineTest extends SSLEngineTest {
         assertFalse(src.hasRemaining());
     }
 
-    @Test(expected = IllegalArgumentException.class)
-    public void testSNIMatchersThrows() throws Exception {
+    @Test
+    public void testSNIMatchersDoesNotThrow() throws Exception {
         assumeTrue(PlatformDependent.javaVersion() >= 8);
         SelfSignedCertificate ssc = new SelfSignedCertificate();
         serverSslCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
@@ -574,7 +598,7 @@ public class OpenSslEngineTest extends SSLEngineTest {
         SSLEngine engine = serverSslCtx.newEngine(UnpooledByteBufAllocator.DEFAULT);
         try {
             SSLParameters parameters = new SSLParameters();
-            Java8SslUtils.setSNIMatcher(parameters);
+            Java8SslTestUtils.setSNIMatcher(parameters);
             engine.setSSLParameters(parameters);
         } finally {
             cleanupServerSslEngine(engine);

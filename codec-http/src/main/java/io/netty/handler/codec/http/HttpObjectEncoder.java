@@ -163,9 +163,9 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
 
     private void encodeChunkedContent(ChannelHandlerContext ctx, Object msg, long contentLength, List<Object> out) {
         if (contentLength > 0) {
-            byte[] length = Long.toHexString(contentLength).getBytes(CharsetUtil.US_ASCII);
-            ByteBuf buf = ctx.alloc().buffer(length.length + 2);
-            buf.writeBytes(length);
+            String lengthHex = Long.toHexString(contentLength);
+            ByteBuf buf = ctx.alloc().buffer(lengthHex.length() + 2);
+            buf.writeCharSequence(lengthHex, CharsetUtil.US_ASCII);
             buf.writeBytes(CRLF);
             out.add(buf);
             out.add(encodeAndRetain(msg));
@@ -195,7 +195,14 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
         }
     }
 
-    boolean isContentAlwaysEmpty(@SuppressWarnings("unused") H msg) {
+    /**
+     * Determine whether a message has a content or not. Some message may have headers indicating
+     * a content without having an actual content, e.g the response to an HEAD or CONNECT request.
+     *
+     * @param msg the message to test
+     * @return {@code true} to signal the message has no content
+     */
+    protected boolean isContentAlwaysEmpty(@SuppressWarnings("unused") H msg) {
         return false;
     }
 
@@ -232,7 +239,7 @@ public abstract class HttpObjectEncoder<H extends HttpMessage> extends MessageTo
 
     @Deprecated
     protected static void encodeAscii(String s, ByteBuf buf) {
-        HttpUtil.encodeAscii0(s, buf);
+        buf.writeCharSequence(s, CharsetUtil.US_ASCII);
     }
 
     protected abstract void encodeInitialLine(ByteBuf buf, H message) throws Exception;

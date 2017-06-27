@@ -20,8 +20,10 @@ import io.netty.handler.codec.http2.Http2HeadersEncoder.SensitivityDetector;
 import io.netty.util.internal.UnstableApi;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_INITIAL_HUFFMAN_DECODE_CAPACITY;
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_MAX_RESERVED_STREAMS;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
+import static io.netty.util.internal.ObjectUtil.checkPositive;
 import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -62,6 +64,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
  *   <li>{@link #headerSensitivityDetector(SensitivityDetector)}</li>
  *   <li>{@link #encoderEnforceMaxConcurrentStreams(boolean)}</li>
  *   <li>{@link #encoderIgnoreMaxHeaderListSize(boolean)}</li>
+ *   <li>{@link #initialHuffmanDecodeCapacity(int)}</li>
  * </ul>
  *
  * <h3>Exposing necessary methods in a subclass</h3>
@@ -79,7 +82,7 @@ public abstract class AbstractHttp2ConnectionHandlerBuilder<T extends Http2Conne
     private static final SensitivityDetector DEFAULT_HEADER_SENSITIVITY_DETECTOR = Http2HeadersEncoder.NEVER_SENSITIVE;
 
     // The properties that can always be set.
-    private Http2Settings initialSettings = new Http2Settings().maxHeaderListSize(DEFAULT_HEADER_LIST_SIZE);
+    private Http2Settings initialSettings = Http2Settings.defaultSettings();
     private Http2FrameListener frameListener;
     private long gracefulShutdownTimeoutMillis = DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT_MILLIS;
 
@@ -103,6 +106,7 @@ public abstract class AbstractHttp2ConnectionHandlerBuilder<T extends Http2Conne
     private SensitivityDetector headerSensitivityDetector;
     private Boolean encoderEnforceMaxConcurrentStreams;
     private Boolean encoderIgnoreMaxHeaderListSize;
+    private int initialHuffmanDecodeCapacity = DEFAULT_INITIAL_HUFFMAN_DECODE_CAPACITY;
 
     /**
      * Sets the {@link Http2Settings} to use for the initial connection settings exchange.
@@ -346,6 +350,17 @@ public abstract class AbstractHttp2ConnectionHandlerBuilder<T extends Http2Conne
     }
 
     /**
+     * Sets the initial size of an intermediate buffer used during HPACK huffman decoding.
+     * @param initialHuffmanDecodeCapacity initial size of an intermediate buffer used during HPACK huffman decoding.
+     * @return this.
+     */
+    protected B initialHuffmanDecodeCapacity(int initialHuffmanDecodeCapacity) {
+        enforceNonCodecConstraints("initialHuffmanDecodeCapacity");
+        this.initialHuffmanDecodeCapacity = checkPositive(initialHuffmanDecodeCapacity, "initialHuffmanDecodeCapacity");
+        return self();
+    }
+
+    /**
      * Create a new {@link Http2ConnectionHandler}.
      */
     protected T build() {
@@ -364,9 +379,9 @@ public abstract class AbstractHttp2ConnectionHandlerBuilder<T extends Http2Conne
 
     private T buildFromConnection(Http2Connection connection) {
         Long maxHeaderListSize = initialSettings.maxHeaderListSize();
-        Http2FrameReader reader = new DefaultHttp2FrameReader(maxHeaderListSize == null ?
-                new DefaultHttp2HeadersDecoder(isValidateHeaders()) :
-                new DefaultHttp2HeadersDecoder(isValidateHeaders(), maxHeaderListSize));
+        Http2FrameReader reader = new DefaultHttp2FrameReader(new DefaultHttp2HeadersDecoder(isValidateHeaders(),
+                maxHeaderListSize == null ? DEFAULT_HEADER_LIST_SIZE : maxHeaderListSize,
+                initialHuffmanDecodeCapacity));
         Http2FrameWriter writer = encoderIgnoreMaxHeaderListSize == null ?
                 new DefaultHttp2FrameWriter(headerSensitivityDetector()) :
                 new DefaultHttp2FrameWriter(headerSensitivityDetector(), encoderIgnoreMaxHeaderListSize);
@@ -433,9 +448,9 @@ public abstract class AbstractHttp2ConnectionHandlerBuilder<T extends Http2Conne
         return (B) this;
     }
 
-    private void enforceNonCodecConstraints(String rejectee) {
-        enforceConstraint(rejectee, "server/connection", decoder);
-        enforceConstraint(rejectee, "server/connection", encoder);
+    private void enforceNonCodecConstraints(String rejected) {
+        enforceConstraint(rejected, "server/connection", decoder);
+        enforceConstraint(rejected, "server/connection", encoder);
     }
 
     private static void enforceConstraint(String methodName, String rejectorName, Object value) {

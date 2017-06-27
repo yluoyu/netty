@@ -16,6 +16,7 @@
 
 package io.netty.buffer;
 
+import io.netty.util.NettyRuntime;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
 import io.netty.util.internal.PlatformDependent;
@@ -29,7 +30,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-public class PooledByteBufAllocator extends AbstractByteBufAllocator {
+public class PooledByteBufAllocator extends AbstractByteBufAllocator implements ByteBufAllocatorMetricProvider {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(PooledByteBufAllocator.class);
     private static final int DEFAULT_NUM_HEAP_ARENA;
@@ -73,11 +74,14 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
         // Assuming each arena has 3 chunks, the pool should not consume more than 50% of max memory.
         final Runtime runtime = Runtime.getRuntime();
 
-        // Use 2 * cores by default to reduce condition as we use 2 * cores for the number of EventLoops
-        // in NIO and EPOLL as well. If we choose a smaller number we will run into hotspots as allocation and
-        // deallocation needs to be synchronized on the PoolArena.
-        // See https://github.com/netty/netty/issues/3888
-        final int defaultMinNumArena = runtime.availableProcessors() * 2;
+        /*
+         * We use 2 * available processors by default to reduce contention as we use 2 * available processors for the
+         * number of EventLoops in NIO and EPOLL as well. If we choose a smaller number we will run into hot spots as
+         * allocation and de-allocation needs to be synchronized on the PoolArena.
+         *
+         * See https://github.com/netty/netty/issues/3888.
+         */
+        final int defaultMinNumArena = NettyRuntime.availableProcessors() * 2;
         final int defaultChunkSize = DEFAULT_PAGE_SIZE << DEFAULT_MAX_ORDER;
         DEFAULT_NUM_HEAP_ARENA = Math.max(0,
                 SystemPropertyUtil.getInt(
@@ -147,6 +151,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     private final List<PoolArenaMetric> directArenaMetrics;
     private final PoolThreadLocalCache threadCache;
     private final int chunkSize;
+    private final PooledByteBufAllocatorMetric metric;
 
     public PooledByteBufAllocator() {
         this(false);
@@ -184,9 +189,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     }
 
     public PooledByteBufAllocator(boolean preferDirect, int nHeapArena,
-            int nDirectArena, int pageSize, int maxOrder, int tinyCacheSize,
-            int smallCacheSize, int normalCacheSize,
-            boolean useCacheForAllThreads) {
+                                  int nDirectArena, int pageSize, int maxOrder, int tinyCacheSize,
+                                  int smallCacheSize, int normalCacheSize,
+                                  boolean useCacheForAllThreads) {
         this(preferDirect, nHeapArena, nDirectArena, pageSize, maxOrder,
                 tinyCacheSize, smallCacheSize, normalCacheSize,
                 useCacheForAllThreads, DEFAULT_DIRECT_MEMORY_CACHE_ALIGNMENT);
@@ -254,6 +259,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
             directArenas = null;
             directArenaMetrics = Collections.emptyList();
         }
+        metric = new PooledByteBufAllocatorMetric(this);
     }
 
     @SuppressWarnings("unchecked")
@@ -326,14 +332,14 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     }
 
     /**
-     * Default number of heap areanas - System Property: io.netty.allocator.numHeapArenas - default 2 * cores
+     * Default number of heap arenas - System Property: io.netty.allocator.numHeapArenas - default 2 * cores
      */
     public static int defaultNumHeapArena() {
         return DEFAULT_NUM_HEAP_ARENA;
     }
 
     /**
-     * Default numer of direct arenas - System Property: io.netty.allocator.numDirectArenas - default 2 * cores
+     * Default number of direct arenas - System Property: io.netty.allocator.numDirectArenas - default 2 * cores
      */
     public static int defaultNumDirectArena() {
         return DEFAULT_NUM_DIRECT_ARENA;
@@ -375,7 +381,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     }
 
     /**
-     * Return {@code true} if direct memory cache aligment is supported, {@code false} otherwise.
+     * Return {@code true} if direct memory cache alignment is supported, {@code false} otherwise.
      */
     public static boolean isDirectMemoryCacheAlignmentSupported() {
         return PlatformDependent.hasUnsafe();
@@ -446,37 +452,57 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
         }
     }
 
+    @Override
+    public PooledByteBufAllocatorMetric metric() {
+        return metric;
+    }
+
     /**
      * Return the number of heap arenas.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#numHeapArenas()}.
      */
+    @Deprecated
     public int numHeapArenas() {
         return heapArenaMetrics.size();
     }
 
     /**
      * Return the number of direct arenas.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#numDirectArenas()}.
      */
+    @Deprecated
     public int numDirectArenas() {
         return directArenaMetrics.size();
     }
 
     /**
      * Return a {@link List} of all heap {@link PoolArenaMetric}s that are provided by this pool.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#heapArenas()}.
      */
+    @Deprecated
     public List<PoolArenaMetric> heapArenas() {
         return heapArenaMetrics;
     }
 
     /**
      * Return a {@link List} of all direct {@link PoolArenaMetric}s that are provided by this pool.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#directArenas()}.
      */
+    @Deprecated
     public List<PoolArenaMetric> directArenas() {
         return directArenaMetrics;
     }
 
     /**
      * Return the number of thread local caches used by this {@link PooledByteBufAllocator}.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#numThreadLocalCaches()}.
      */
+    @Deprecated
     public int numThreadLocalCaches() {
         PoolArena<?>[] arenas = heapArenas != null ? heapArenas : directArenas;
         if (arenas == null) {
@@ -493,30 +519,64 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
 
     /**
      * Return the size of the tiny cache.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#tinyCacheSize()}.
      */
+    @Deprecated
     public int tinyCacheSize() {
         return tinyCacheSize;
     }
 
     /**
      * Return the size of the small cache.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#smallCacheSize()}.
      */
+    @Deprecated
     public int smallCacheSize() {
         return smallCacheSize;
     }
 
     /**
      * Return the size of the normal cache.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#normalCacheSize()}.
      */
+    @Deprecated
     public int normalCacheSize() {
         return normalCacheSize;
     }
 
     /**
      * Return the chunk size for an arena.
+     *
+     * @deprecated use {@link PooledByteBufAllocatorMetric#chunkSize()}.
      */
+    @Deprecated
     public final int chunkSize() {
         return chunkSize;
+    }
+
+    final long usedHeapMemory() {
+        return usedMemory(heapArenas);
+    }
+
+    final long usedDirectMemory() {
+        return usedMemory(directArenas);
+    }
+
+    private static long usedMemory(PoolArena<?>... arenas) {
+        if (arenas == null) {
+            return -1;
+        }
+        long used = 0;
+        for (PoolArena<?> arena : arenas) {
+            used += arena.numActiveBytes();
+            if (used < 0) {
+                return Long.MAX_VALUE;
+            }
+        }
+        return used;
     }
 
     final PoolThreadCache threadCache() {

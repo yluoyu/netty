@@ -15,21 +15,24 @@
  */
 package io.netty.microbench.handler.ssl;
 
-import javax.net.ssl.SSLException;
-
 import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Threads;
 
 import java.nio.ByteBuffer;
+import javax.net.ssl.SSLException;
 
 @State(Scope.Benchmark)
 @Threads(1)
 public class SslEngineWrapBenchmark extends AbstractSslEngineThroughputBenchmark {
 
+    @Param({ "1", "2", "5", "10" })
+    public int numWraps;
+
     @Benchmark
     public ByteBuffer wrap() throws SSLException {
-        return doWrap();
+        return doWrap(numWraps);
     }
 }

@@ -53,6 +53,7 @@ public final class OpenSsl {
     private static final boolean SUPPORTS_KEYMANAGER_FACTORY;
     private static final boolean SUPPORTS_HOSTNAME_VALIDATION;
     private static final boolean USE_KEYMANAGER_FACTORY;
+    private static final boolean SUPPORTS_OCSP;
 
     // Protocols
     static final String PROTOCOL_SSL_V2_HELLO = "SSLv2Hello";
@@ -120,8 +121,8 @@ public final class OpenSsl {
             boolean supportsHostNameValidation = false;
             try {
                 final long sslCtx = SSLContext.make(SSL.SSL_PROTOCOL_ALL, SSL.SSL_MODE_SERVER);
-                long privateKeyBio = 0;
                 long certBio = 0;
+                SelfSignedCertificate cert = null;
                 try {
                     SSLContext.setCipherSuite(sslCtx, "ALL");
                     final long ssl = SSL.newSSL(sslCtx, true);
@@ -140,27 +141,31 @@ public final class OpenSsl {
                             logger.debug("Hostname Verification not supported.");
                         }
                         try {
-                            SelfSignedCertificate cert = new SelfSignedCertificate();
+                            cert = new SelfSignedCertificate();
                             certBio = ReferenceCountedOpenSslContext.toBIO(cert.cert());
                             SSL.setCertificateChainBio(ssl, certBio, false);
                             supportsKeyManagerFactory = true;
-                            useKeyManagerFactory = AccessController.doPrivileged(new PrivilegedAction<Boolean>() {
-                                @Override
-                                public Boolean run() {
-                                    return SystemPropertyUtil.getBoolean(
-                                            "io.netty.handler.ssl.openssl.useKeyManagerFactory", true);
-                                }
-                            });
+                            try {
+                                useKeyManagerFactory = AccessController.doPrivileged(new PrivilegedAction<Boolean>() {
+                                    @Override
+                                    public Boolean run() {
+                                        return SystemPropertyUtil.getBoolean(
+                                                "io.netty.handler.ssl.openssl.useKeyManagerFactory", true);
+                                    }
+                                });
+                            } catch (Throwable ignore) {
+                                logger.debug("Failed to get useKeyManagerFactory system property.");
+                            }
                         } catch (Throwable ignore) {
                             logger.debug("KeyManagerFactory not supported.");
                         }
                     } finally {
                         SSL.freeSSL(ssl);
-                        if (privateKeyBio != 0) {
-                            SSL.freeBIO(privateKeyBio);
-                        }
                         if (certBio != 0) {
                             SSL.freeBIO(certBio);
+                        }
+                        if (cert != null) {
+                            cert.delete();
                         }
                     }
                 } finally {
@@ -182,12 +187,9 @@ public final class OpenSsl {
 
             final Set<String> availableCipherSuites = new LinkedHashSet<String>(
                     AVAILABLE_OPENSSL_CIPHER_SUITES.size() + AVAILABLE_JAVA_CIPHER_SUITES.size());
-            for (String cipher: AVAILABLE_OPENSSL_CIPHER_SUITES) {
-                availableCipherSuites.add(cipher);
-            }
-            for (String cipher: AVAILABLE_JAVA_CIPHER_SUITES) {
-                availableCipherSuites.add(cipher);
-            }
+            availableCipherSuites.addAll(AVAILABLE_OPENSSL_CIPHER_SUITES);
+            availableCipherSuites.addAll(AVAILABLE_JAVA_CIPHER_SUITES);
+
             AVAILABLE_CIPHER_SUITES = availableCipherSuites;
             SUPPORTS_KEYMANAGER_FACTORY = supportsKeyManagerFactory;
             SUPPORTS_HOSTNAME_VALIDATION = supportsHostNameValidation;
@@ -213,6 +215,7 @@ public final class OpenSsl {
             }
 
             SUPPORTED_PROTOCOLS_SET = Collections.unmodifiableSet(protocols);
+            SUPPORTS_OCSP = doesSupportOcsp();
         } else {
             AVAILABLE_OPENSSL_CIPHER_SUITES = Collections.emptySet();
             AVAILABLE_JAVA_CIPHER_SUITES = Collections.emptySet();
@@ -221,9 +224,28 @@ public final class OpenSsl {
             SUPPORTS_HOSTNAME_VALIDATION = false;
             USE_KEYMANAGER_FACTORY = false;
             SUPPORTED_PROTOCOLS_SET = Collections.emptySet();
+            SUPPORTS_OCSP = false;
         }
     }
 
+    private static boolean doesSupportOcsp() {
+        boolean supportsOcsp = false;
+        if (version() >= 0x10002000L) {
+            long sslCtx = -1;
+            try {
+                sslCtx = SSLContext.make(SSL.SSL_PROTOCOL_TLSV1_2, SSL.SSL_MODE_SERVER);
+                SSLContext.enableOcsp(sslCtx, false);
+                supportsOcsp = true;
+            } catch (Exception ignore) {
+                // ignore
+            } finally {
+                if (sslCtx != -1) {
+                    SSLContext.free(sslCtx);
+                }
+            }
+        }
+        return supportsOcsp;
+    }
     private static boolean doesSupportProtocol(int protocol) {
         long sslCtx = -1;
         try {
@@ -256,14 +278,18 @@ public final class OpenSsl {
     }
 
     /**
+     * Returns {@code true} if the used version of OpenSSL supports OCSP stapling.
+     */
+    public static boolean isOcspSupported() {
+      return SUPPORTS_OCSP;
+    }
+
+    /**
      * Returns the version of the used available OpenSSL library or {@code -1} if {@link #isAvailable()}
      * returns {@code false}.
      */
     public static int version() {
-        if (isAvailable()) {
-            return SSL.version();
-        }
-        return -1;
+        return isAvailable() ? SSL.version() : -1;
     }
 
     /**
@@ -271,10 +297,7 @@ public final class OpenSsl {
      * returns {@code false}.
      */
     public static String versionString() {
-        if (isAvailable()) {
-            return SSL.versionString();
-        }
-        return null;
+        return isAvailable() ? SSL.versionString() : null;
     }
 
     /**
@@ -366,7 +389,7 @@ public final class OpenSsl {
         String os = normalizeOs(SystemPropertyUtil.get("os.name", ""));
         String arch = normalizeArch(SystemPropertyUtil.get("os.arch", ""));
 
-        Set<String> libNames = new LinkedHashSet<String>(3);
+        Set<String> libNames = new LinkedHashSet<String>(4);
         // First, try loading the platform-specific library. Platform-specific
         // libraries will be available if using a tcnative uber jar.
         libNames.add("netty-tcnative-" + os + '-' + arch);
@@ -376,6 +399,8 @@ public final class OpenSsl {
         }
         // finally the default library.
         libNames.add("netty-tcnative");
+        // in Java 8, statically compiled JNI code is namespaced
+        libNames.add("netty_tcnative");
 
         NativeLibraryLoader.loadFirstAvailable(SSL.class.getClassLoader(),
             libNames.toArray(new String[libNames.size()]));

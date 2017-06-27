@@ -37,12 +37,25 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.Checksum;
 
-import static io.netty.handler.codec.compression.Lz4Constants.*;
+import static io.netty.handler.codec.compression.Lz4Constants.BLOCK_TYPE_COMPRESSED;
+import static io.netty.handler.codec.compression.Lz4Constants.BLOCK_TYPE_NON_COMPRESSED;
+import static io.netty.handler.codec.compression.Lz4Constants.CHECKSUM_OFFSET;
+import static io.netty.handler.codec.compression.Lz4Constants.COMPRESSED_LENGTH_OFFSET;
+import static io.netty.handler.codec.compression.Lz4Constants.COMPRESSION_LEVEL_BASE;
+import static io.netty.handler.codec.compression.Lz4Constants.DECOMPRESSED_LENGTH_OFFSET;
+import static io.netty.handler.codec.compression.Lz4Constants.DEFAULT_BLOCK_SIZE;
+import static io.netty.handler.codec.compression.Lz4Constants.DEFAULT_SEED;
+import static io.netty.handler.codec.compression.Lz4Constants.HEADER_LENGTH;
+import static io.netty.handler.codec.compression.Lz4Constants.MAGIC_NUMBER;
+import static io.netty.handler.codec.compression.Lz4Constants.MAX_BLOCK_SIZE;
+import static io.netty.handler.codec.compression.Lz4Constants.MIN_BLOCK_SIZE;
+import static io.netty.handler.codec.compression.Lz4Constants.TOKEN_OFFSET;
+import static io.netty.util.internal.ThrowableUtil.unknownStackTrace;
 
 /**
  * Compresses a {@link ByteBuf} using the LZ4 format.
  *
- * See original <a href="http://code.google.com/p/lz4/">LZ4 website</a>
+ * See original <a href="https://github.com/Cyan4973/lz4">LZ4 Github project</a>
  * and <a href="http://fastcompression.blogspot.ru/2011/05/lz4-explained.html">LZ4 block format</a>
  * for full description.
  *
@@ -56,6 +69,9 @@ import static io.netty.handler.codec.compression.Lz4Constants.*;
  *  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *     * * * * * * * * * *
  */
 public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
+    private static final EncoderException ENCODE_FINSHED_EXCEPTION = unknownStackTrace(new EncoderException(
+                    new IllegalStateException("encode finished and not enough space to write remaining data")),
+                    Lz4FrameEncoder.class, "encode");
     static final int DEFAULT_MAX_ENCODE_SIZE = Integer.MAX_VALUE;
 
     private final int blockSize;
@@ -63,12 +79,12 @@ public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
     /**
      * Underlying compressor in use.
      */
-    private LZ4Compressor compressor;
+    private final LZ4Compressor compressor;
 
     /**
      * Underlying checksum calculator in use.
      */
-    private ByteBufChecksum checksum;
+    private final ByteBufChecksum checksum;
 
     /**
      * Compression level of current LZ4 encoder (depends on {@link #blockSize}).
@@ -98,7 +114,7 @@ public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
     /**
      * Creates the fastest LZ4 encoder with default block size (64 KB)
      * and xxhash hashing for Java, based on Yann Collet's work available at
-     * <a href="http://code.google.com/p/xxhash/">Google Code</a>.
+     * <a href="https://github.com/Cyan4973/xxHash">Github</a>.
      */
     public Lz4FrameEncoder() {
         this(false);
@@ -107,7 +123,7 @@ public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
     /**
      * Creates a new LZ4 encoder with hight or fast compression, default block size (64 KB)
      * and xxhash hashing for Java, based on Yann Collet's work available at
-     * <a href="http://code.google.com/p/xxhash/">Google Code</a>.
+     * <a href="https://github.com/Cyan4973/xxHash">Github</a>.
      *
      * @param highCompressor  if {@code true} codec will use compressor which requires more memory
      *                        and is slower but compresses more efficiently
@@ -228,6 +244,10 @@ public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
     @Override
     protected void encode(ChannelHandlerContext ctx, ByteBuf in, ByteBuf out) throws Exception {
         if (finished) {
+            if (!out.isWritable(in.readableBytes())) {
+                // out should be EMPTY_BUFFER because we should have allocated enough space above in allocateBuffer.
+                throw ENCODE_FINSHED_EXCEPTION;
+            }
             out.writeBytes(in);
             return;
         }
@@ -261,7 +281,7 @@ public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
             ByteBuffer outNioBuffer = out.internalNioBuffer(idx + HEADER_LENGTH, out.writableBytes() - HEADER_LENGTH);
             int pos = outNioBuffer.position();
             // We always want to start at position 0 as we take care of reusing the buffer in the encode(...) loop.
-            compressor.compress(buffer.internalNioBuffer(0, flushableBytes), outNioBuffer);
+            compressor.compress(buffer.internalNioBuffer(buffer.readerIndex(), flushableBytes), outNioBuffer);
             compressedLength = outNioBuffer.position() - pos;
         } catch (LZ4Exception e) {
             throw new CompressionException(e);
@@ -301,33 +321,20 @@ public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
         }
         finished = true;
 
-        try {
-            final ByteBuf footer = ctx.alloc().heapBuffer(
-                    compressor.maxCompressedLength(buffer.readableBytes()) + HEADER_LENGTH);
-            flushBufferedData(footer);
+        final ByteBuf footer = ctx.alloc().heapBuffer(
+                compressor.maxCompressedLength(buffer.readableBytes()) + HEADER_LENGTH);
+        flushBufferedData(footer);
 
-            final int idx = footer.writerIndex();
-            footer.setLong(idx, MAGIC_NUMBER);
-            footer.setByte(idx + TOKEN_OFFSET, (byte) (BLOCK_TYPE_NON_COMPRESSED | compressionLevel));
-            footer.setInt(idx + COMPRESSED_LENGTH_OFFSET, 0);
-            footer.setInt(idx + DECOMPRESSED_LENGTH_OFFSET, 0);
-            footer.setInt(idx + CHECKSUM_OFFSET, 0);
+        final int idx = footer.writerIndex();
+        footer.setLong(idx, MAGIC_NUMBER);
+        footer.setByte(idx + TOKEN_OFFSET, (byte) (BLOCK_TYPE_NON_COMPRESSED | compressionLevel));
+        footer.setInt(idx + COMPRESSED_LENGTH_OFFSET, 0);
+        footer.setInt(idx + DECOMPRESSED_LENGTH_OFFSET, 0);
+        footer.setInt(idx + CHECKSUM_OFFSET, 0);
 
-            footer.writerIndex(idx + HEADER_LENGTH);
+        footer.writerIndex(idx + HEADER_LENGTH);
 
-            return ctx.writeAndFlush(footer, promise);
-        } finally {
-            cleanup();
-        }
-    }
-
-    private void cleanup() {
-        compressor = null;
-        checksum = null;
-        if (buffer != null) {
-            buffer.release();
-            buffer = null;
-        }
+        return ctx.writeAndFlush(footer, promise);
     }
 
     /**
@@ -408,7 +415,10 @@ public class Lz4FrameEncoder extends MessageToByteEncoder<ByteBuf> {
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
         super.handlerRemoved(ctx);
-        cleanup();
+        if (buffer != null) {
+            buffer.release();
+            buffer = null;
+        }
     }
 
     final ByteBuf getBackingBuffer() {
